@@ -55,7 +55,7 @@ $plugin['flags'] = '3';
 // abc_string_name => Localized String
 
 $plugin['textpack'] = <<<EOT
-#@owner smd_remote
+#@owner smd_remote_file
 #@language en, en-gb, en-us
 #@file
 smd_remote_secure => Secure
