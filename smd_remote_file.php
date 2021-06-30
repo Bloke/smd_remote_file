@@ -17,9 +17,9 @@ $plugin['name'] = 'smd_remote_file';
 // 1 = Plugin help is in raw HTML.  Not recommended.
 # $plugin['allow_html_help'] = 1;
 
-$plugin['version'] = '0.50';
+$plugin['version'] = '0.6.0';
 $plugin['author'] = 'Stef Dawson';
-$plugin['author_uri'] = 'http://stefdawson.com/';
+$plugin['author_uri'] = 'https://stefdawson.com/';
 $plugin['description'] = 'Integrate remote URL and non web-accessible files with the Files panel';
 
 // Plugin load order:
@@ -55,25 +55,25 @@ $plugin['flags'] = '3';
 // abc_string_name => Localized String
 
 $plugin['textpack'] = <<<EOT
-#@language en,en-gb,en-us
-#@smd_remote
-smd_remote_all => All users
-smd_remote_download_status => Permitted download statuses
-smd_remote_internet => The Internet
-smd_remote_limit_privs => Limit downloads to this priv level
-smd_remote_mechanism => Allow downloads from
-smd_remote_prefs_deleted => Preferences deleted
-smd_remote_pref_legend => Remote file preferences
+#@owner smd_remote
+#@language en, en-gb, en-us
+#@file
 smd_remote_secure => Secure
-smd_remote_secure_loc => Secure location
 smd_remote_secure_opts => Security options
-smd_remote_secure_path => Secure file path (not web-accessible)
 smd_remote_secure_uploaded => Secure file uploaded
-smd_remote_tab_name => Remote file
 smd_remote_upload => Upload
 smd_remote_url => or URL
 smd_remote_urls => Remote URLs
 smd_remote_url_tooltip => Enter a URL to upload to Textpattern
+#@prefs
+smd_remote_all => All users
+smd_remote_download_status => Permitted download statuses
+smd_remote_file => Remote files
+smd_remote_internet => The Internet
+smd_remote_limit_privs => Limit downloads to this priv level
+smd_remote_mechanism => Allow downloads from
+smd_remote_secure_loc => Secure location
+smd_remote_secure_path => Secure file path (not web-accessible)
 EOT;
 
 if (!defined('txpinterface'))
@@ -97,969 +97,1204 @@ if (!defined('txpinterface'))
 // TODO:
 //  * Set URL / secure for missing files (remote_update / file_save step needs to move file if file names different and update DB)
 //  * Safe parameters inside the .safe file to govern access restriction, expiry, download count, etc
-//  * is_writable() folder checks, and other error traps
-global $smd_remote_prefs;
-smd_remote_get_prefs();
+//  * is_writable() folder checks, and other error traps.
+$smd_remote_prefs = smd_remote_get_prefs();
 
-if (@txpinterface === 'admin') {
-	global $event;
+if (txpinterface === 'admin') {
+    global $event;
 
-	add_privs('smd_remote_prefs', '1');
-	add_privs('plugin_prefs.smd_remote_file', '1');
-	register_tab('extensions', 'smd_remote_prefs', gTxt('smd_remote_tab_name'));
-	register_callback('smd_remote_dispatcher', 'smd_remote_prefs');
-	register_callback('smd_remote_dispatcher', 'plugin_prefs.smd_remote_file');
-	register_callback('smd_remote_welcome', 'plugin_lifecycle.smd_remote_file');
+    add_privs('prefs.smd_remote_file', '1');
+    add_privs('plugin_prefs.smd_remote_file', '1');
+    register_callback('smd_remote_dispatcher', 'plugin_prefs.smd_remote_file');
+    register_callback('smd_remote_welcome', 'plugin_lifecycle.smd_remote_file');
 
-	if($event === 'file') {
-		register_callback('smd_remote_file', 'file', 'file_replace', 1);
-		register_callback('smd_remote_file', 'file', 'file_create', 1);
-		register_callback('smd_remote_file', 'file', 'file_insert', 1);
-		register_callback('smd_remote_file_update', 'file', 'file_save');
-		register_callback('smd_remote_pre_multi_edit', 'file', 'file_multi_edit', 1);
-		register_callback('smd_remote_multi_edit', 'file', 'file_multi_edit');
-		register_callback('smd_remote_file_upload', 'file_ui', 'upload_form');
-		register_callback('smd_remote_file_edit', 'file');
-	}
+    if ($event === 'file') {
+        register_callback('smd_remote_file', 'file', 'file_replace', 1);
+        register_callback('smd_remote_file', 'file', 'file_create', 1);
+        register_callback('smd_remote_file', 'file', 'file_insert', 1);
+        register_callback('smd_remote_file_update', 'file', 'file_save');
+        register_callback('smd_remote_pre_multi_edit', 'file', 'file_multi_edit', 1);
+        register_callback('smd_remote_multi_edit', 'file', 'file_multi_edit');
+        register_callback('smd_remote_file_upload', 'file_ui', 'upload_form');
+        register_callback('smd_remote_file_edit', 'file');
+    }
 }
 
 if (txpinterface === 'public') {
-	register_callback('smd_remote_download', 'file_download');
+    register_callback('smd_remote_download', 'file_download');
 }
 
 // This privilege can be overridden with smd_user_manager
 // Caveat: Privs panel list needs to be saved from smd_um first
 add_privs('file.download', get_pref('smd_remote_limit_privs', $smd_remote_prefs['smd_remote_limit_privs']['default']));
 
-// *********************************
-// ******** ADMIN INTERFACE ********
-// *********************************
-// Plugin jump off point
-function smd_remote_dispatcher($evt, $stp) {
-	global $event;
+/**
+ * Plugin jump off point.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ */
+function smd_remote_dispatcher($evt, $stp)
+{
+    global $event;
 
-	$available_steps = array(
-		'smd_secure_uploaded' => false,
-		'smd_remote_prefs'    => false,
-	);
+    $available_steps = array(
+        'smd_secure_uploaded' => false,
+        'smd_remote_prefs'    => false,
+    );
 
-	if (!$stp or !bouncer($stp, $available_steps)) {
-		$stp = 'smd_remote_prefs';
-	}
-	$stp();
+    if (!$stp or !bouncer($stp, $available_steps)) {
+        $stp = 'smd_remote_prefs';
+    }
+
+    $stp();
 }
 
-// ------------------------
-// Initialization
-function smd_remote_welcome($evt, $stp) {
-	$msg = '';
-	switch ($stp) {
-		case 'installed':
-			$msg = 'Externalise your files.';
-			break;
-		case 'deleted':
-			smd_remote_prefs_remove(0);
-			break;
-	}
-	return $msg;
+/**
+ * Initialization after install.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ * @return string      Greeting text
+ */
+function smd_remote_welcome($evt, $stp)
+{
+    $msg = '';
+
+    switch ($stp) {
+        case 'installed':
+            smd_remote_prefs_install();
+            $msg = 'Externalise your files.';
+            break;
+        case 'deleted':
+            smd_remote_prefs_remove();
+            break;
+    }
+
+    return $msg;
 }
 
-// ------------------------
-// Delete plugin prefs
-function smd_remote_prefs_remove($showpane=1) {
-	$message = '';
+/**
+ * Install the prefs if necessary.
+ *
+ * When operating under a plugin cache environment, the install lifecycle
+ * event is never fired, so this is a fallback.
+ *
+ * The lifecycle callback remains for deletion purposes under a regular installation,
+ * since the plugin cannot detect this in a cache environment.
+ *
+ * @see smd_remote_welcome()
+ */
+function smd_remote_prefs_install()
+{
+    $smd_remote_prefs = smd_remote_get_prefs();
 
-	safe_delete('txp_prefs', "name='smd_remote_%'");
+    foreach ($smd_remote_prefs as $key => $prefobj) {
+        if (get_pref($key, null) === null) {
+            $viz = isset($prefobj['visibility']) ? $prefobj['visibility'] : PREF_GLOBAL;
+            set_pref($key, doSlash($prefobj['default']), 'smd_remote_file', $prefobj['type'], $prefobj['html'], $prefobj['position'], $viz);
+        } elseif (fetch('html', 'txp_prefs', 'name', 'smd_remote_mechanism')) {
 
-	if ($showpane) {
-		$message = gTxt('smd_remote_prefs_deleted');
-		smd_remote_prefs($message);
-	}
+        }
+    }
 }
 
-// ------------------------
-// Handle the prefs panel
-function smd_remote_prefs($msg='') {
-	global $smd_remote_prefs;
-
-	// Re-fetch the group list in case smd_um has modified it since plugin load time
-	$all = get_groups();
-	$all_bar_none = array_keys($all);
-	array_shift($all_bar_none);
-	$smd_remote_prefs['smd_remote_limit_privs']['content'] = array($all + array(join(',', $all_bar_none) => gTxt('smd_remote_all')), false);
-
-	if (ps('smd_remote_pref_save')) {
-		foreach ($smd_remote_prefs as $idx => $prefobj) {
-			$val = ps($idx);
-			$val = (is_array($val)) ? join(', ', $val) : $val;
-			set_pref($idx, $val, 'smd_remote', $prefobj['type'], $prefobj['html'], $prefobj['position']);
-		}
-
-		$msg = gTxt('preferences_saved');
-	}
-
-	pagetop(gTxt('smd_remote_tab_name'), $msg);
-
-	$out = array();
-	$out[] = '<div class="plugin-column">';
-	$out[] = '<form name="smd_remote_prefs" id="smd_remote_prefs" action="index.php" method="post">';
-	$out[] = eInput('smd_remote_prefs').sInput('smd_remote_pref_save');
-	$out[] = startTable();
-	$out[] = tr(tdcs(strong(gTxt('smd_remote_pref_legend')), 2));
-	foreach ($smd_remote_prefs as $idx => $prefobj) {
-		$subout = array();
-		$subout[] = tda('<label for="'.$idx.'">'.gTxt($idx).'</label>');
-		$val = get_pref($idx, $prefobj['default'], 1);
-		switch ($prefobj['html']) {
-			case 'text_input':
-				$subout[] = fInputCell($idx, $val, '', '', '', $idx);
-			break;
-			case 'yesnoradio':
-				$subout[] = tda(yesnoRadio($idx, $val));
-			break;
-			case 'checkboxset':
-				$vals = do_list($val);
-				$lclout = array();
-				foreach ($prefobj['content'] as $cb => $val) {
-					$checked = in_array($cb, $vals);
-					$lclout[] = checkbox($idx.'[]', $cb, $checked). gTxt($val);
-				}
-				$subout[] = tda(join(n, $lclout));
-			break;
-			case 'selectlist':
-				$subout[] = tda(selectInput($idx, $prefobj['content'][0], $val, $prefobj['content'][1]));
-			break;
-		}
-		$out[] = tr(join(n ,$subout));
-	}
-
-	$out[] = tr(tda('&nbsp;') . tda(fInput('submit', 'smd_remote_pref_save', gTxt('save'), 'publish')));
-	$out[] = endTable().tInput();
-	$out[] = '</form></div>';
-
-	echo join(n, $out);
+/**
+ * Delete plugin prefs.
+ *
+ * @param  boolean $showpane Whether to display a success message or not
+ */
+function smd_remote_prefs_remove()
+{
+    safe_delete('txp_prefs', "name='smd_remote_%'");
 }
 
-// ------------------------
-// Add markup around the upload forms
-function smd_remote_file_upload($evt, $stp, $def) {
-	global $smd_remote_prefs, $step;
+/**
+ * Handle the prefs panel.
+ */
+function smd_remote_prefs()
+{
+    smd_remote_prefs_install();
+    header('Location: ?event=prefs#prefs_group_smd_remote_file');
+}
 
-	$fid = gps('id');
+/**
+ * Add markup around the upload forms.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ * @param  string $def Default content
+ * @return string      HTML
+ */
+function smd_remote_file_upload($evt, $stp, $def)
+{
+    global $step;
 
-	$rfhelpLink = '<a target="_blank"'.
-			' href="http://stefdawson.com/support/smd_remote_file_url_popup.html"'.
-			' onclick="popWin(this.href); return false;" class="pophelp">?</a>';
-/*	$sfhelpLink = '<a target="_blank"'.
-			' href="http://stefdawson.com/support/smd_remote_file_secure_popup.html"'.
-			' onclick="popWin(this.href); return false;" class="pophelp">?</a>';
+    $smd_remote_prefs = smd_remote_get_prefs();
+
+    $fid = gps('id');
+
+    $rfhelpLink = '<a target="_blank"'.
+            ' href="https://stefdawson.com/support/smd_remote_file_url_popup.html"'.
+            ' onclick="popWin(this.href); return false;" class="pophelp">?</a>';
+/*  $sfhelpLink = '<a target="_blank"'.
+            ' href="http://stefdawson.com/support/smd_remote_file_secure_popup.html"'.
+            ' onclick="popWin(this.href); return false;" class="pophelp">?</a>';
 */
-	$mech = get_pref('smd_remote_mechanism', $smd_remote_prefs['smd_remote_mechanism']['default']);
-	$dosec = in_list('secure', $mech);
-	$dorem = in_list('remote', $mech);
-	$rs = array('filename' => '');
-	if ($fid) {
-		$rs = safe_row('*', 'txp_file', "id='".doSlash($fid)."'");
-	}
+    $mech = get_pref('smd_remote_mechanism', $smd_remote_prefs['smd_remote_mechanism']['default']);
+    $dosec = in_list('secure', $mech);
+    $dorem = in_list('remote', $mech);
+    $rs = array('filename' => '');
 
-	$show_rem = ((strpos($rs['filename'], '.link') === false) && $step == 'file_edit');
-	$is_safe = ((strpos($rs['filename'], '.safe') !== false) && (($step == 'file_edit') || ($step == 'file_replace')));
+    if ($fid) {
+        $rs = safe_row('*', 'txp_file', "id='".doSlash($fid)."'");
+    }
 
-	$def = str_replace('</p>',
-			(($dosec)
-				? sp.checkbox('smd_secure',1,($is_safe ? 1 : 0))
-					. ' <label for="smd_secure">'.gTxt('smd_remote_secure').'</label>'
-				: ''
-			)
-			. '</p>' .
-			(($dorem && !$show_rem && (!$is_safe))
-				? trim(form(graf(gTxt('smd_remote_url').sp.$rfhelpLink.sp.fInput('text', 'smd_remote_url', '', 'edit', gTxt('smd_remote_url_tooltip'), '', '32').sp.
-						fInput('submit', '', gTxt('smd_remote_upload')))
-				))
-				: ''
-			),
-			$def);
+    $show_rem = ((strpos($rs['filename'], '.link') === false) && $step == 'file_edit');
+    $is_safe = ((strpos($rs['filename'], '.safe') !== false) && (($step == 'file_edit') || ($step == 'file_replace')));
 
-	return $def;
+    $def = preg_replace('/<input type="reset" value="Reset" \/>\s*<input type="submit" value="Upload" \/>/',
+        (($dosec)
+            ? sp.checkbox('smd_secure', 1, ($is_safe ? 1 : 0))
+                . ' <label for="smd_secure">'.gTxt('smd_remote_secure').'</label>'
+            : ''
+        )
+        . ' </span>' .
+        (($dorem && !$show_rem && (!$is_safe))
+            ? trim(form(graf(gTxt('smd_remote_url').sp.$rfhelpLink.sp.fInput('text', 'smd_remote_url', '', 'edit', gTxt('smd_remote_url_tooltip'), '', '32').sp.
+                    fInput('submit', '', gTxt('smd_remote_upload')))
+            ))
+            : ''
+        ),
+        $def);
+
+    return $def;
 }
 
-// ------------------------
-// Generic callback which is fired _before_ the Files page has loaded.
-// Intercepts any events/steps that deal with secure/remote files.
-function smd_remote_file($evt, $stp) {
-	global $file_base_path, $txp_user, $step, $theme;
+/**
+ * Generic callback, fired before the Files page has loaded.
+ *
+ * Intercepts any events/steps that deal with secure/remote files.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ */
+function smd_remote_file($evt, $stp)
+{
+    global $file_base_path, $txp_user, $step, $theme;
 
-	extract(doSlash(gpsa(array('smd_remote_url', 'smd_secure', 'category', 'permissions', 'description', 'title'))));
+    smd_remote_prefs_install();
+    extract(doSlash(gpsa(array('smd_remote_url', 'smd_secure', 'category', 'permissions', 'description', 'title'))));
 
-	$finfo = array(
-		'title'       => $title,
-		'category'    => $category,
-		'permissions' => $permissions,
-		'description' => $description,
-		'status'      => '4',
-		'created'     => 'now()',
-		'modified'    => 'now()',
-		'author'      => doSlash($txp_user),
-	);
+    $finfo = array(
+        'title'       => $title,
+        'category'    => $category,
+        'permissions' => $permissions,
+        'description' => $description,
+        'status'      => '4',
+        'created'     => 'now()',
+        'modified'    => 'now()',
+        'author'      => doSlash($txp_user),
+    );
 
-	if ($smd_remote_url) {
-		$url = trim($smd_remote_url);
+    if ($smd_remote_url) {
+        $url = trim($smd_remote_url);
 
-		// Only intercept remote files; leave everything else for Txp to manage
-		if (strpos($url, 'http') === 0) {
-			$hdrs = smd_get_headers($url, 1);
-			$finfo['size'] = ($hdrs === false || !isset($hdrs['content-length'])) ? 1 : $hdrs['content-length'];
+        // Only intercept remote files; leave everything else for Txp to manage.
+        if (strpos($url, 'http') === 0) {
+            $hdrs = smd_get_headers($url, 1);
+            $finfo['size'] = ($hdrs === false || !isset($hdrs['content-length'])) ? 1 : $hdrs['content-length'];
 
-			// Make a filename and full path: unencoded
-			$dest_filename = basename(urldecode($url)).'.link';
-			$dest_filepath = build_file_path($file_base_path, $dest_filename);
-			$finfo['filename'] = doSlash($dest_filename);
+            // Make a filename and full path: unencoded.
+            $dest_filename = basename(urldecode($url)).'.link';
+            $dest_filepath = build_file_path($file_base_path, $dest_filename);
+            $finfo['filename'] = doSlash($dest_filename);
 
-			if (file_exists($dest_filepath)) {
-				smd_remote_file_write($dest_filepath, $dest_filename, $url);
-			} else {
-				// File doesn't exist so create it and put the URL inside
-				$tmp = tempnam(get_pref('tempdir'), 'smd_');
-				$handle = fopen($tmp, 'w');
-				fwrite($handle, $url.n);
-				fclose($handle);
-				rename($tmp, $dest_filepath);
+            if (file_exists($dest_filepath)) {
+                smd_remote_file_write($dest_filepath, $dest_filename, $url);
+            } else {
+                // File doesn't exist so create it and put the URL inside.
+                $tmp = tempnam(get_pref('tempdir'), 'smd_');
+                $handle = fopen($tmp, 'w');
+                fwrite($handle, $url.n);
+                fclose($handle);
+                rename($tmp, $dest_filepath);
 
-				// Add the file to Txp
-				// Can't use file_db_add() because this step is pre txp_file.php being loaded :-(
-//				$ret = file_db_add(doSlash($dest_filename), $category, $permissions, $description, $size, $title);
-				$ret = smd_remote_file_insert($finfo);
+                // Add the file to Textpattern.
+                // Can't use file_db_add() because this step is pre txp_file.php being loaded :-(
+//              $ret = file_db_add(doSlash($dest_filename), $category, $permissions, $description, $size, $title);
+                $ret = smd_remote_file_insert($finfo);
 
-				// Fake the step so Txp's internal file upload step is not called
-				// TODO: success message
-				$step = 'smd_secure_uploaded';
-			}
-		} else {
-			// TODO: Upload failed message
-			// gTxt('file_upload_failed') . ((empty($smd_remote_url)) ? ' - '.gTxt('upload_err_no_file') : '');
-		}
+                // Fake the step so Txp's internal file upload step is not called
+                // TODO: success message
+                $step = 'smd_secure_uploaded';
+            }
+        } else {
+            // TODO: Upload failed message.
+            // gTxt('file_upload_failed') . ((empty($smd_remote_url)) ? ' - '.gTxt('upload_err_no_file') : '');
+        }
+    } elseif ($smd_secure) {
+        if ($stp == 'file_create') {
+            $orig_filename = ps('filename');
+            $dest_filename = sanitizeForFile($orig_filename);
+            $orig_filepath = build_file_path($file_base_path, $orig_filename);
+            $sz = filesize($orig_filepath);
+        } else {
+            // Get filenames and create full paths: unencoded.
+            $fn = $_FILES['thefile']['name'];
+            $tn = $_FILES['thefile']['tmp_name'];
+            $sz = $_FILES['thefile']['size'];
 
-	} else if ($smd_secure) {
-		if ($stp == 'file_create') {
-			$orig_filename = ps('filename');
-			$dest_filename = sanitizeForFile($orig_filename);
-			$orig_filepath = build_file_path($file_base_path, $orig_filename);
-			$sz = filesize($orig_filepath);
-		} else {
-			// Get filenames and create full paths: unencoded
-			$fn = $_FILES['thefile']['name'];
-			$tn = $_FILES['thefile']['tmp_name'];
-			$sz = $_FILES['thefile']['size'];
-			if ($stp == 'file_replace') {
-				// Replaced files keep the same file name as before (shrug, Txp)
-				$id = ps('id');
-				$dest_filename = basename(safe_field('filename', 'txp_file', 'id='.doSlash($id)), '.safe');
-			} else {
-				$dest_filename = sanitizeForFile($fn);
-			}
-		}
-		$dest_safename = $dest_filename.'.safe';
-		$dest_realpath = build_file_path(get_pref('smd_remote_secure_path'), $dest_filename);
-		$dest_origpath = build_file_path($file_base_path, $dest_filename);
-		$dest_filepath = build_file_path($file_base_path, $dest_safename);
-		$finfo['filename'] = doSlash($dest_safename);
-		$finfo['size'] = $sz;
+            if ($stp == 'file_replace') {
+                // Replaced files keep the same file name as before (shrug, Txp).
+                $id = ps('id');
+                $dest_filename = basename(safe_field('filename', 'txp_file', 'id='.doSlash($id)), '.safe');
+            } else {
+                $dest_filename = sanitizeForFile($fn);
+            }
+        }
 
-		if (file_exists($dest_filepath)) {
-			// Update secure info for existing placeholder
-			smd_secure_file_write($dest_filepath, $dest_filename);
-		} else if ($stp == 'file_replace') {
-			// File was insecure, now secure
-			safe_update('txp_file', "filename='" . doSlash($dest_safename) . "'", "id='" . doSlash($id) . "'");
-			smd_secure_file_create($dest_filepath, $dest_filename);
+        $dest_safename = $dest_filename.'.safe';
+        $dest_realpath = build_file_path(get_pref('smd_remote_secure_path'), $dest_filename);
+        $dest_origpath = build_file_path($file_base_path, $dest_filename);
+        $dest_filepath = build_file_path($file_base_path, $dest_safename);
+        $finfo['filename'] = doSlash($dest_safename);
+        $finfo['size'] = $sz;
 
-			if (file_exists($dest_origpath)) {
-				unlink($dest_origpath);
-			}
-		} else {
-			// File doesn't exist so create it
-			// Reserve file contents (3rd param) for future meta info use (e.g. start/expiry date, max download count, etc)
-			smd_secure_file_create($dest_filepath, $dest_filename);
-			$id = smd_remote_file_insert($finfo);
-		}
+        if (file_exists($dest_filepath)) {
+            // Update secure info for existing placeholder.
+            smd_secure_file_write($dest_filepath, $dest_filename);
+        } elseif ($stp == 'file_replace') {
+            // File was insecure, now secure.
+            safe_update('txp_file', "filename='" . doSlash($dest_safename) . "'", "id='" . doSlash($id) . "'");
+            smd_secure_file_create($dest_filepath, $dest_filename);
 
-		// Move the uploaded file to the secure location
-		if (isset($tn)) {
-			move_uploaded_file($tn, $dest_realpath);
-		} else {
-			rename($orig_filepath, $dest_realpath);
-		}
-		if (isset($id)) {
-			smd_remote_set_size($id);
-		}
+            if (file_exists($dest_origpath)) {
+                unlink($dest_origpath);
+            }
+        } else {
+            // File doesn't exist so create it.
+            // Reserve file contents (3rd param) for future meta info use
+            // (e.g. start/expiry date, max download count, etc).
+            smd_secure_file_create($dest_filepath, $dest_filename);
+            $id = smd_remote_file_insert($finfo);
+        }
 
-		// Fake the step so Txp's internal file upload step is not called
-		// TODO: success message
-		$step = 'smd_secure_uploaded';
+        // Move the uploaded file to the secure location.
+        if (isset($tn)) {
+            move_uploaded_file($tn, $dest_realpath);
+        } else {
+            rename($orig_filepath, $dest_realpath);
+        }
 
-	} else if ( ($stp == 'file_replace') && !$smd_secure) {
-		$id = ps('id');
-		$filename = safe_field('filename', 'txp_file', 'id='.doSlash($id));
+        if (isset($id)) {
+            smd_remote_set_size($id);
+        }
 
-		if (strpos($filename, '.safe') !== false) {
-			// File used to be secure, now isn't so:
-			//  a) delete secure file
-			//  b) delete .safe file
-			//  c) rename DB entry to remove .safe
-			//  d) leave Txp to save the file as normal
-			$real_filename = basename($filename, '.safe');
-			$dest_file = build_file_path($file_base_path, $filename);
-			$safe_file = build_file_path(get_pref('smd_remote_secure_path'), $real_filename);
-			safe_update('txp_file', "filename='" . doSlash($real_filename) . "'", "filename='" . doSlash($filename) . "'");
-			unlink($dest_file);
-			unlink($safe_file);
-		}
-	}
+        // Fake the step so Txp's internal file upload step is not called.
+        // TODO: success message.
+        $step = 'smd_secure_uploaded';
+    } elseif (($stp == 'file_replace') && !$smd_secure) {
+        $id = ps('id');
+        $filename = safe_field('filename', 'txp_file', 'id='.doSlash($id));
+
+        if (strpos($filename, '.safe') !== false) {
+            // File used to be secure, now isn't so:
+            //  a) delete secure file
+            //  b) delete .safe file
+            //  c) rename DB entry to remove .safe
+            //  d) leave Txp to save the file as normal
+            $real_filename = basename($filename, '.safe');
+            $dest_file = build_file_path($file_base_path, $filename);
+            $safe_file = build_file_path(get_pref('smd_remote_secure_path'), $real_filename);
+            safe_update('txp_file', "filename='" . doSlash($real_filename) . "'", "filename='" . doSlash($filename) . "'");
+            unlink($dest_file);
+            unlink($safe_file);
+        }
+    }
 }
 
-// ------------------------
-function smd_remote_file_insert($finfo) {
+/**
+ * Insert the file metadata to the database.
+ *
+ * @param  array $finfo File details to store
+ * @return boolean      Success status
+ */
+function smd_remote_file_insert($finfo)
+{
 
-	$ret = safe_insert('txp_file',
-		"filename    = '{$finfo['filename']}',
-		 title       = '{$finfo['title']}',
-		 category    = '{$finfo['category']}',
-		 permissions = '{$finfo['permissions']}',
-		 description = '{$finfo['description']}',
-		 status      = '{$finfo['status']}',
-		 size        = '{$finfo['size']}',
-		 created     = '{$finfo['created']}',
-		 modified    = '{$finfo['modified']}',
-		 author      = '{$finfo['author']}'
-	");
+    $ret = safe_insert('txp_file',
+        "filename    = '{$finfo['filename']}',
+         title       = '{$finfo['title']}',
+         category    = '{$finfo['category']}',
+         permissions = '{$finfo['permissions']}',
+         description = '{$finfo['description']}',
+         status      = '{$finfo['status']}',
+         size        = '{$finfo['size']}',
+         created     = '{$finfo['created']}',
+         modified    = '{$finfo['modified']}',
+         author      = '{$finfo['author']}'
+    ");
 
-	return $ret;
+    return $ret;
 }
 
-// ------------------------
-// Fired _after_ the Files page has loaded to handle insertion of
-// extra fields into the UI
-function smd_remote_file_edit($evt, $stp) {
-	global $file_base_path, $smd_remote_prefs;
+/**
+ * Fired after Files panel has loaded to insert extra fields into UI.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ * @return string      Javascript
+ */
+function smd_remote_file_edit($evt, $stp)
+{
+    global $file_base_path;
 
-	$jsadd = array();
+    $smd_remote_prefs = smd_remote_get_prefs();
 
-	if ($stp == 'file_edit' || $stp == 'file_replace') {
-		$id = assert_int(gps('id'));
-		// TODO: is there a global page var containing filename instead of re-requesting it from DB?
-		$rs = safe_row('filename', 'txp_file', 'id = '. $id);
+    $jsadd = array();
 
-		if (strpos($rs['filename'], '.link') !== false) {
-			$filepath = build_file_path($file_base_path, $rs['filename']);
-			$contents = smd_remote_file_list($filepath, 0, 1);
+    if ($stp == 'file_edit' || $stp == 'file_replace') {
+        $id = assert_int(gps('id'));
+        // TODO: is there a global page var containing filename instead of re-requesting it from DB?
+        $rs = safe_row('filename', 'txp_file', 'id = '. $id);
 
-			$ul_form = graf(gTxt('smd_remote_urls').br.text_area('smd_remote_url', '100', '400', implode("\u000D", $contents)));
-			$jsadd[] = 'jQuery(".replace-file").remove();';
-			$jsadd[] = 'jQuery(".edit-file-status").before(\''.$ul_form.'\');';
-		} else if (strpos($rs['filename'], '.safe') !== false) {
-			$filepath = build_file_path($file_base_path, $rs['filename']);
-			$contents = smd_remote_file_list($filepath, 0, 1);
+        if (strpos($rs['filename'], '.link') !== false) {
+            $filepath = build_file_path($file_base_path, $rs['filename']);
+            $contents = smd_remote_file_list($filepath, 0, 1);
 
-			$ul_form = graf(gTxt('smd_remote_secure_opts').br.text_area('smd_secure_opts', '100', '400', implode("\u000D", $contents)));
-			$jsadd[] = 'jQuery(".edit-file-status").before(\''.$ul_form.'\');';
-		}
-	} else {
-		// Files panel main list page
-		$mech = get_pref('smd_remote_mechanism', $smd_remote_prefs['smd_remote_mechanism']['default']);
-		$dosec = in_list('secure', $mech);
-		if ($dosec) {
-			$markup = sp.checkbox('smd_secure',1,0)
-					. ' <label for="smd_secure">'.gTxt('smd_remote_secure').'</label>';
-			$jsadd[] = 'jQuery("#assign_file p").append(\''.$markup.'\');';
-		}
-	}
+            $ul_form = preg_replace('/\s+/', ' ', trim(inputLabel('smd_remote_urls', text_area('smd_remote_url', '100', '400', implode("\u000D", $contents)))));
+            $jsadd[] = 'jQuery(".replace-file").remove();';
+            $jsadd[] = 'jQuery(".edit-file-status").before(\''.$ul_form.'\');';
+        } elseif (strpos($rs['filename'], '.safe') !== false) {
+            $filepath = build_file_path($file_base_path, $rs['filename']);
+            $contents = smd_remote_file_list($filepath, 0, 1);
 
-	// Inject any javascript onto the page
-	if ($jsadd) {
-		echo smd_remote_js(join(n, $jsadd));
-	}
+            $ul_form = preg_replace('/\s+/', ' ', inputLabel('smd_remote_secure_opts', text_area('smd_secure_opts', '100', '400', implode("\u000D", $contents))));
+            $jsadd[] = 'jQuery(".edit-file-status").before(\''.$ul_form.'\');';
+        }
+    } else {
+        // Files panel main list page.
+        $mech = get_pref('smd_remote_mechanism', $smd_remote_prefs['smd_remote_mechanism']['default']);
+        $dosec = in_list('secure', $mech);
+
+        if ($dosec) {
+            $markup = sp.checkbox('smd_secure',1,0)
+                    . ' <label for="smd_secure">'.gTxt('smd_remote_secure').'</label>';
+            $jsadd[] = 'jQuery("#assign_file p").append(\''.$markup.'\');';
+        }
+    }
+
+    // Inject any javascript onto the page.
+    if ($jsadd) {
+        echo smd_remote_js(implode(n, $jsadd));
+    }
 }
 
-// ------------------------
-function smd_remote_file_resync() {
-	global $file_base_path;
+/**
+ * Rewrite metadata after file has changed.
+ */
+function smd_remote_file_resync()
+{
+    global $file_base_path;
 
-	extract(gpsa(array('smd_remote_url', 'smd_secure_opts', 'id')));
-	$id = assert_int($id);
-	$rs = safe_row('filename','txp_file','id = '.$id);
-	$dest_filepath = build_file_path($file_base_path, $rs['filename']);
+    extract(gpsa(array('smd_remote_url', 'smd_secure_opts', 'id')));
+    $id = assert_int($id);
+    $rs = safe_row('filename','txp_file','id = '.$id);
+    $dest_filepath = build_file_path($file_base_path, $rs['filename']);
 
-	if (strpos($rs['filename'], '.link') !== false) {
-		// When a .link file is updated with a new set of URLs, the existing file name
-		// must remain unchanged.
-		$urls = explode(n, trim($smd_remote_url));
-		$real_filename = basename($rs['filename'], '.link');
+    if (strpos($rs['filename'], '.link') !== false) {
+        // When a .link file is updated with a new set of URLs, the existing file name
+        // must remain unchanged.
+        $urls = explode(n, trim($smd_remote_url));
+        $real_filename = basename($rs['filename'], '.link');
+        $valid_urls = array();
 
-		$valid_urls = array();
-		foreach ($urls as $url) {
-			$url = trim($url);
-			// Does the file start with http and end with the filename?
-			if ((strpos($url, 'http') === 0) && (preg_match("/".$real_filename."$/", $url) === 1)) {
-				$valid_urls[] = $url;
-	      }
-		}
-		$valid_urls = array_unique($valid_urls);
+        foreach ($urls as $url) {
+            $url = trim($url);
 
-		smd_remote_file_write($dest_filepath, $rs['filename'], join(n,$valid_urls), 'w');
-	} else if (strpos($rs['filename'], '.safe') !== false) {
-		$content = explode(n, trim($smd_secure_opts));
-		smd_secure_file_write($dest_filepath, $rs['filename'], join(n,$content), 'w');
-	}
+            // Does the file start with http and end with the filename?
+            if ((strpos($url, 'http') === 0) && (preg_match("/".$real_filename."$/", $url) === 1)) {
+                $valid_urls[] = $url;
+          }
+        }
+
+        $valid_urls = array_unique($valid_urls);
+
+        smd_remote_file_write($dest_filepath, $rs['filename'], implode(n, $valid_urls), 'w');
+    } elseif (strpos($rs['filename'], '.safe') !== false) {
+        $content = explode(n, trim($smd_secure_opts));
+        smd_secure_file_write($dest_filepath, $rs['filename'], implode(n, $content), 'w');
+    }
 }
 
-// ------------------------
-// Every time a file is saved/edited, Txp recalculates its size from the file in the /files dir (grrr).
-// This is undesirable so it is replaced with the size of the remote/secure file instead.
-function smd_remote_file_update() {
-	extract(gpsa(array('id')));
-	smd_remote_file_resync();
-	smd_remote_set_size($id);
+/**
+ * Fix file size after save.
+ *
+ * Every time a file is saved/edited, Txp recalculates its size from
+ * the file in the /files dir (grrr). This is undesirable so it is
+ * replaced with the size of the remote/secure file instead.
+ */
+function smd_remote_file_update()
+{
+    extract(gpsa(array('id')));
+
+    smd_remote_file_resync();
+    smd_remote_set_size($id);
 }
 
-// ------------------------
-// Sets the size of the given Txp database file to that of its corresponding "real" remote/secure file size
-function smd_remote_set_size($id_or_file) {
-	global $file_base_path;
+/**
+ * Fetch the remote file size and sync it with Txp.
+ *
+ * Set the size of the given Txp database file to that of its
+ * corresponding "real" remote/secure file size.
+ *
+ * @param  int|string $id_or_file Reference to the file (numeric ID or filename)
+ */
+function smd_remote_set_size($id_or_file)
+{
+    global $file_base_path;
 
-	if (is_numeric($id_or_file)) {
-		$filename = trim(safe_field('filename', 'txp_file', 'id='.intval($id_or_file)));
-	} else {
-		$filename = trim($id_or_file);
-	}
+    if (is_numeric($id_or_file)) {
+        $filename = trim(safe_field('filename', 'txp_file', 'id='.intval($id_or_file)));
+    } else {
+        $filename = trim($id_or_file);
+    }
 
-	if (strpos($filename, '.link') !== false) {
-		$filepath = build_file_path($file_base_path, $filename);
-		$url = smd_remote_file_list($filepath, 1, 1);
+    if (strpos($filename, '.link') !== false) {
+        $filepath = build_file_path($file_base_path, $filename);
+        $url = smd_remote_file_list($filepath, 1, 1);
 
-		if (count($url) > 0) {
-			$hdrs = smd_get_headers($url[0], 1);
-			$size = ($hdrs === false || !isset($hdrs['content-length'])) ? 1 : $hdrs['content-length'];
-			safe_update('txp_file', 'size='.$size, "filename='".$filename."'");
-		}
-	} else if (strpos($filename, '.safe') !== false) {
-		$filepath = build_file_path(get_pref('smd_remote_secure_path'), basename($filename, '.safe'));
-		$size = filesize($filepath);
-		safe_update('txp_file', 'size='.$size, "filename='".$filename."'");
-	}
+        if (count($url) > 0) {
+            $hdrs = smd_get_headers($url[0], 1);
+            $size = ($hdrs === false || !isset($hdrs['content-length'])) ? 1 : $hdrs['content-length'];
+            safe_update('txp_file', 'size='.$size, "filename='".$filename."'");
+        }
+    } elseif (strpos($filename, '.safe') !== false) {
+        $filepath = build_file_path(get_pref('smd_remote_secure_path'), basename($filename, '.safe'));
+        $size = filesize($filepath);
+        safe_update('txp_file', 'size='.$size, "filename='".$filename."'");
+    }
 }
 
-// ------------------------
-// Multi-delete is done in two passes.
-// Step 1) Grab a list of IDs that are about to be removed...
-function smd_remote_pre_multi_edit($evt, $stp) {
-	global $smd_remote_selected;
+/**
+ * Multi-edit delete: part 1.
+ *
+ * Multi-delete is done in two passes.
+ * Step 1: Grab a list of IDs that are about to be removed.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ * @see    smd_remote_multi_edit for part 2
+ */
+function smd_remote_pre_multi_edit($evt, $stp)
+{
+    global $smd_remote_selected;
 
-	$selected = ps('selected');
-	if ($selected && is_array($selected)) {
-		$selected = array_map('assert_int', $selected);
-		$smd_remote_selected = safe_column('filename', 'txp_file', 'id in (' . join(',', $selected) . ')');
-	}
+    $selected = ps('selected');
+
+    if ($selected && is_array($selected)) {
+        $selected = array_map('assert_int', $selected);
+        $smd_remote_selected = safe_column('filename', 'txp_file', 'id in (' . implode(',', $selected) . ')');
+    }
 }
 
-// ------------------------
-// Step 2) Effect changes to safe files if their counterpart .safe index file no longer exists
-function smd_remote_multi_edit($evt, $stp) {
-	global $smd_remote_selected, $file_base_path;
+/**
+ * Multi-edit delete: part 2.
+ *
+ * Multi-delete is done in two passes.
+ * Step 2: Effect changes to safe files if their counterpart .safe
+ * index file no longer exists.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ * @see    smd_remote_pre_multi_edit for part 1
+ */
+function smd_remote_multi_edit($evt, $stp)
+{
+    global $smd_remote_selected, $file_base_path;
 
-	$method   = ps('edit_method');
+    $method   = ps('edit_method');
 
-	switch ($method) {
-		case 'delete':
-			$safe_path = get_pref('smd_remote_secure_path');
-			foreach ($smd_remote_selected as $file) {
-				$dest_filepath = build_file_path($file_base_path, $file);
-				if (!file_exists($dest_filepath)) {
-					$safe_file = build_file_path($safe_path, basename($file, '.safe'));
-					if (file_exists($safe_file)) {
-						unlink($safe_file);
-					}
-				}
-			}
-		break;
-	}
+    switch ($method) {
+        case 'delete':
+            $safe_path = get_pref('smd_remote_secure_path');
+
+            foreach ($smd_remote_selected as $file) {
+                $dest_filepath = build_file_path($file_base_path, $file);
+
+                if (!file_exists($dest_filepath)) {
+                    $safe_file = build_file_path($safe_path, basename($file, '.safe'));
+
+                    if (file_exists($safe_file)) {
+                        unlink($safe_file);
+                    }
+                }
+            }
+            break;
+    }
 }
 
-// ------------------------
-// Callback for uploading a URL from the Files tab
-function smd_remote_file_create() {
-	global $file_base_path;
+/**
+ * Callback for uploading a URL from the Files tab.
+ */
+function smd_remote_file_create()
+{
+    global $file_base_path;
 }
 
-// ------------------------
-// Cheap redirect step to prevent Txp's internal file processing from trying to
-// move files that have already been relocated
-function smd_secure_uploaded() {
+/**
+ * Placeholder stub called after a file is uploaded.
+ *
+ * Cheap redirect step to prevent Txp's internal file processing from trying to
+ * move files that have already been relocated.
+ */
+function smd_secure_uploaded()
+{
 }
 
-// ------------------------
-function smd_secure_file_write($filepath, $filename, $content='', $writeMode='a') {
-	// No need to actually write anything to the file right now
-	// TODO: use the file contents as a way to store meta info like max d/l count, start/expiry dates, etc
+/**
+ * Store a secure file in the chosen destination.
+ *
+ * @param  string $filepath  Full path to the file for writing
+ * @param  string $filename  Filename of the destination
+ * @param  string $content   Content to write (unused at present)
+ * @param  string $writeMode Whether to overwrite ('w') or append ('a')
+ */
+function smd_secure_file_write($filepath, $filename, $content = '', $writeMode = 'a')
+{
+    // No need to actually write anything to the file right now.
+    // TODO: use the file contents as a way to store meta info like
+    // max download count, start/expiry dates, etc.
 
-	// Set the size just in case
-	smd_remote_set_size($filename);
+    // Set the size, just in case.
+    smd_remote_set_size($filename);
 }
 
-// ------------------------
-function smd_secure_file_create($filepath, $filename, $content='') {
-	$content = ($content) ? $content : 'smd_remote_file placeholder'.n;
-	$tmp = tempnam(get_pref('tempdir'), 'smd_');
-	$handle = fopen($tmp, 'w');
-	fwrite($handle, $content);
-	fclose($handle);
-	rename($tmp, $filepath);
+/**
+ * Create a new secure file at the chosen destination.
+ *
+ * @param  string $filepath  Full path to the file for writing
+ * @param  string $filename  Filename of the destination
+ * @param  string $content   Content to write
+ */
+function smd_secure_file_create($filepath, $filename, $content = '')
+{
+    $content = ($content) ? $content : 'smd_remote_file placeholder'.n;
+    $tmp = tempnam(get_pref('tempdir'), 'smd_');
+    $handle = fopen($tmp, 'w');
+    fwrite($handle, $content);
+    fclose($handle);
+    rename($tmp, $filepath);
 
-	// Set the size just in case
-	smd_remote_set_size($filename);
+    // Set the size, just in case.
+    smd_remote_set_size($filename);
 }
 
-// ------------------------
-// Append a URL to the given file. If writeMode="w" the whole file is replaced
-function smd_remote_file_write($filepath, $filename, $url, $writeMode='a') {
-	// Read the whole file because we only want to add the URL if it's not there already
-	$lines = smd_remote_file_list($filepath, 0, 1);
-	if (!in_array($url, $lines) || $writeMode == 'w') {
-		$handle = fopen($filepath, $writeMode);
-		fwrite($handle, $url.n);
-		fclose($handle);
-	}
-	// Set the size just in case
-	smd_remote_set_size($filename);
+/**
+ * Append a URL to the given file.
+ *
+ * If writeMode="w" the whole file is replaced.
+ *
+ * @param  string $filepath  Full path to the file for writing
+ * @param  string $filename  Filename of the destination
+ * @param  string $url       The URL to inject into the file contents
+ * @param  string $writeMode Whether to overwrite ('w') or append ('a')
+ * @return [type]            [description]
+ */
+function smd_remote_file_write($filepath, $filename, $url, $writeMode = 'a')
+{
+    // Read the whole file because we only want to add the URL if it's not there already.
+    $lines = smd_remote_file_list($filepath, 0, 1);
+
+    if (!in_array($url, $lines) || $writeMode == 'w') {
+        $handle = fopen($filepath, $writeMode);
+        fwrite($handle, $url.n);
+        fclose($handle);
+    }
+
+    // Set the size, just in case.
+    smd_remote_set_size($filename);
 }
 
-// ------------------------
-// Read the contents of the chosen file (full path required) and get lines from within, adding them to an array.
-//  $offset is where to start from. Normally 1 = 1st row, 2 = 2nd row and so on. 0 = a random row.
-//  $qty specifies how many rows to pull. 0 = unlimited.
-function smd_remote_file_list($fname, $qty=1, $offset=0) {
-	$out = array();
-	if (file_exists($fname)) {
-		$fd = fopen($fname, 'r');
-		// Read the whole file in (yes there's the file() call, but fgets() is supposedly quicker on txt files)
-		$lines = array();
-		while (!feof($fd)) {
-			$line = rtrim(fgets($fd));
-			if ($line != '') {
-			   $lines[] = $line;
-			}
-		}
-		fclose ($fd);
-		if ($offset == 0) {
-			shuffle($lines);
-			$offset = 1;
-		}
-		$offset = ($offset > count($lines)) ? 1 : $offset;
-		$out = ($qty == 0) ? $lines : array_slice($lines, $offset-1, $qty);
-	}
-	return $out;
+
+/**
+ * Fetch a list of remote files from the placeholder file.
+ *
+ * Read the contents of the chosen file (full path required) and get
+ * lines from within, adding them to an array.
+ *
+ * @param  stirng  $fname  Full path to the file to read
+ * @param  integer $qty    How many rows to extract. 0 = all.
+ * @param  integer $offset Which line to start from. 1 = 1st row, 2 = 2nd row and so on. 0 = a random row
+ * @return array           List of files
+ */
+function smd_remote_file_list($fname, $qty = 1, $offset = 0)
+{
+    $out = array();
+
+    if (file_exists($fname)) {
+        $fd = fopen($fname, 'r');
+
+        // Read the whole file in (yes there's the file() call, but fgets() is
+        // supposedly quicker on txt files).
+        $lines = array();
+
+        while (!feof($fd)) {
+            $line = rtrim(fgets($fd));
+            if ($line != '') {
+               $lines[] = $line;
+            }
+        }
+
+        fclose ($fd);
+
+        if ($offset == 0) {
+            shuffle($lines);
+            $offset = 1;
+        }
+
+        $offset = ($offset > count($lines)) ? 1 : $offset;
+        $out = ($qty == 0) ? $lines : array_slice($lines, $offset-1, $qty);
+    }
+
+    return $out;
 }
 
-// ------------------------
-function smd_serve_secure_file($finfo, $id) {
-	global $pretext, $file_base_path;
+/**
+ * Permit secure files to be downloaded in a similar manner to native Txp files.
+ *
+ * @param  array   $finfo File info block
+ * @param  integer $id    File id to serve
+ * @return mixed          File, or 404 if not found
+ *
+ * @todo Align this with improved file download hooks in 4.7.
+ */
+function smd_serve_secure_file($finfo, $id)
+{
+    global $pretext, $file_base_path;
 
-	$finfo['path'] = (isset($finfo['path'])) ? $finfo['path'] : $file_base_path;
-	$fullpath = build_file_path($finfo['path'], $finfo['filename']);
+    $finfo['path'] = (isset($finfo['path'])) ? $finfo['path'] : $file_base_path;
+    $fullpath = build_file_path($finfo['path'], $finfo['filename']);
 
-	if (is_file($fullpath)) {
-		$sent = 0;
-		header('Content-Description: File Download');
-		header('Content-Type: application/octet-stream');
-		header('Content-Disposition: attachment; filename="' . basename($finfo['filename']) . '"; size = "'.$finfo['size'].'"');
-		@ini_set('zlib.output_compression', 'Off');
-		@set_time_limit(0);
-		@ignore_user_abort(true);
+    if (is_file($fullpath)) {
+        $sent = 0;
+        header('Content-Description: File Download');
+        header('Content-Type: application/octet-stream');
+        header('Content-Disposition: attachment; filename="' . basename($finfo['filename']) . '"; size = "'.$finfo['size'].'"');
+        @ini_set('zlib.output_compression', 'Off');
+        @set_time_limit(0);
+        @ignore_user_abort(true);
 
-		if ($file = fopen($fullpath, 'rb')) {
-			while(!feof($file) && (connection_status()==0)) {
-				echo fread($file, 1024*64);
-				$sent += (1024*64);
-				ob_flush();
-				flush();
-			}
-			fclose($file);
+        if ($file = fopen($fullpath, 'rb')) {
+            while(!feof($file) && (connection_status()==0)) {
+                echo fread($file, 1024*64);
+                $sent += (1024*64);
+                ob_flush();
+                flush();
+            }
 
-			// Record download
-			if ((connection_status()==0) and !connection_aborted() ) {
-				safe_update('txp_file', 'downloads=downloads+1', 'id='.intval($id));
-				log_hit('200');
-			} else {
-				$pretext['request_uri'] .= ($sent >= $finfo['size'])
-					? '#aborted'
-					: '#aborted-at-'.floor($sent*100 / $finfo['size']).'%';
-				log_hit('200');
-			}
+            fclose($file);
 
-			// Secure download down: Game Over
-			exit(0);
-		}
-	}
+            // Record download.
+            if ((connection_status()==0) and !connection_aborted() ) {
+                safe_update('txp_file', 'downloads=downloads+1', 'id='.intval($id));
+                log_hit('200');
+            } else {
+                $pretext['request_uri'] .= ($sent >= $finfo['size'])
+                    ? '#aborted'
+                    : '#aborted-at-'.floor($sent*100 / $finfo['size']).'%';
+                log_hit('200');
+            }
 
-	return 404;
+            // Secure download down: game over.
+            exit(0);
+        }
+    }
+
+    return 404;
 }
 
-// ------------------------
-// Called just before a download is initiated
-function smd_remote_download($evt, $stp) {
-	global $pretext, $id, $file_base_path, $file_error;
-	if ($evt == 'file_download') {
-		if (isset($file_error)) {
-			// Kludge. Since Txp forbids any downloads of non-live statuses by effectively removing any trace
-			// of the reference to the file from $pretext, we need to re-discover the file's ID from the URL.
-			// Most of this is taken from the beginning of pretext() in publish.php. By the time pretext ends
-			// the data has been scrubbed so a callback on pretext_end is too late
-			$request_uri = preg_replace("|^https?://[^/]+|i","",serverSet('REQUEST_URI'));
-			// IIS fix
-			if (!$request_uri and serverSet('SCRIPT_NAME'))
-				$request_uri = serverSet('SCRIPT_NAME').( (serverSet('QUERY_STRING')) ? '?'.serverSet('QUERY_STRING') : '');
-				// another IIS fix
-			if (!$request_uri and serverSet('argv')) {
-				$argv = serverSet('argv');
-				$request_uri = @substr($argv[0], strpos($argv[0], ';') + 1);
-			}
+/**
+ * Permit remote files to be downloaded in a similar manner to native Txp files.
+ *
+ * Called just before a download is initiated.
+ *
+ * @param  string $evt Textpattern event (panel)
+ * @param  string $stp Textpattern step (action)
+ * @return mixed       File, or 404 if not found
+ *
+ * @todo Align this with improved file download hooks in 4.7.
+ * @todo Check the kludge reflects the current practice in 4.7.
+ */
+function smd_remote_download($evt, $stp)
+{
+    global $pretext, $id, $file_base_path, $file_error;
 
-			$subpath = preg_quote(preg_replace("/https?:\/\/.*(\/.*)/Ui","$1",hu),"/");
-			$req = preg_replace("/^$subpath/i","/",$request_uri);
+    if ($evt == 'file_download') {
+        if (isset($file_error)) {
+            // Kludge. Since Txp forbids any downloads of non-live statuses by effectively removing any trace
+            // of the reference to the file from $pretext, we need to re-discover the file's ID from the URL.
+            // Most of this is taken from the beginning of pretext() in publish.php. By the time pretext ends
+            // the data has been scrubbed so a callback on pretext_end is too late
+            $request_uri = preg_replace("|^https?://[^/]+|i","",serverSet('REQUEST_URI'));
 
-			extract(chopUrl($req));
-			switch ($u1) {
-				case urldecode(strtolower(urlencode(gTxt('file_download')))):
-				$id = (!empty($u2)) ? $u2 : '';
-			}
-		}
+            // IIS fix
+            if (!$request_uri and serverSet('SCRIPT_NAME'))
+                $request_uri = serverSet('SCRIPT_NAME').((serverSet('QUERY_STRING')) ? '?'.serverSet('QUERY_STRING') : '');
+                // another IIS fix
+            if (!$request_uri and serverSet('argv')) {
+                $argv = serverSet('argv');
+                $request_uri = @substr($argv[0], strpos($argv[0], ';') + 1);
+            }
 
-		// Get the "true" filename info and its status
-		$real_file = safe_row('filename, size, status, author', 'txp_file', 'id='.intval($id));
-		$statuses = do_list(get_pref('smd_remote_download_status'));
+            $subpath = preg_quote(preg_replace("/https?:\/\/.*(\/.*)/Ui","$1",hu),"/");
+            $req = preg_replace("/^$subpath/i","/",$request_uri);
 
-		// Handle secure downloads via non-docroot location or hidden/pending status
-		if ( (in_array($real_file['status'], $statuses)) || (strpos($real_file['filename'], '.safe') > 0) ) {
-			if (strpos($real_file['filename'], '.safe') > 0) {
-				$real_file['path'] = get_pref('smd_remote_secure_path');
-				$real_file['filename'] = basename($real_file['filename'], '.safe');
-			}
+            extract(chopUrl($req));
 
-			if (function_exists('smd_um_has_privs')) {
-				// Serve the file if the current logged in user is a member of the file.download or file.download.status_num areas
-				if (smd_um_has_privs(array('area' => 'file.download, file.download.'.$real_file['status']), 'OK')) {
-					$file_error = smd_serve_secure_file($real_file, $id);
-				}
-			}
+            switch ($u1) {
+                case urldecode(strtolower(urlencode(gTxt('file_download')))):
+                $id = (!empty($u2)) ? $u2 : '';
+            }
+        }
 
-			// Serve the file if:
-			// a) the current logged in user is the one who uploaded the file, or
-			// b) the privs of the logged in user match the one(s) in the pref
-			$smd_rem_ili = is_logged_in();
-			if ( ($real_file['author'] == $smd_rem_ili['name']) || (in_list($smd_rem_ili['privs'], get_pref('smd_remote_limit_privs'))) ) {
-				$file_error = smd_serve_secure_file($real_file, $id);
-			}
-		}
+        // Get the "true" filename info and its status.
+        $real_file = safe_row('filename, size, status, author', 'txp_file', 'id='.intval($id));
+        $statuses = do_list(get_pref('smd_remote_download_status'));
 
-		// Serve the file if it's a remote download
-		if ( (!isset($file_error)) && (strpos($real_file['filename'], '.link') > 0) ) {
-			$choose = 0;
-			// Get any overriding value of smd_choose from the query string
-			if ($pretext['qs']) {
-				list($qkey, $qval) = explode('=', $pretext['qs']);
-				if ($qkey == 'smd_choose') {
-					if ($qval > 0) {
-						$choose = intval($qval);
-					}
-				}
-			}
+        // Handle secure downloads via non-docroot location or hidden/pending status.
+        if ((in_array($real_file['status'], $statuses)) || (strpos($real_file['filename'], '.safe') > 0)) {
+            if (strpos($real_file['filename'], '.safe') > 0) {
+                $real_file['path'] = get_pref('smd_remote_secure_path');
+                $real_file['filename'] = basename($real_file['filename'], '.safe');
+            }
 
-			// The file size, however, is that of the remote file
-			$remoteURL = smd_remote_file_list(build_file_path($file_base_path, $real_file['filename']), 1, $choose);
-			if (count($remoteURL) > 0) {
-				$url = $remoteURL[0];
-				// Test the file exists: slow, but reduces false download count increments
-				$hdrs = smd_get_headers($url, 1);
-				$allkey = strtolower(implode(' ', array_keys($hdrs)));
-				if (strpos($allkey, '200') > 0 && strpos($allkey, 'ok') > 0) {
-					header('Content-Description: File Download');
-					header('Content-Type: application/octet-stream');
-					header('Content-Disposition: attachment; filename="' . basename($real_file['filename']) . '"; size = "'.$real_file['size'].'"');
-					// Fix for lame IE 6 pdf bug on servers configured to send cache headers
-					header('Cache-Control: private');
-					@ini_set('zlib.output_compression', 'Off');
-					@set_time_limit(0);
-					@ignore_user_abort(true);
+            if (function_exists('smd_um_has_privs')) {
+                // Serve the file if the current logged in user is a member of the
+                // file.download or file.download.status_num areas.
+                if (smd_um_has_privs(array('area' => 'file.download, file.download.'.$real_file['status']), 'OK')) {
+                    $file_error = smd_serve_secure_file($real_file, $id);
+                }
+            }
 
-					// Hand-off to the remote file
-					header('Location: ' . $url);
+            // Serve the file if:
+            // a) the current logged in user is the one who uploaded the file, or
+            // b) the privs of the logged in user match the one(s) in the pref
+            $smd_rem_ili = is_logged_in();
 
-					// record download if the file sizes match
-					if (intval($hdrs['content-length']) == intval($real_file['size'])) {
-						safe_update('txp_file', 'downloads=downloads+1', 'id='.intval($id));
-						log_hit('200');
-					}
-					// remote download done: game over
-					exit(0);
+            if (($real_file['author'] == $smd_rem_ili['name']) || (in_list($smd_rem_ili['privs'], get_pref('smd_remote_limit_privs')))) {
+                $file_error = smd_serve_secure_file($real_file, $id);
+            }
+        }
 
-				} else {
-					$file_error = 404;
-				}
-			} else {
-				$file_error = 404;
-			}
-		}
-	}
+        // Serve the file if it's a remote download.
+        if ((!isset($file_error)) && (strpos($real_file['filename'], '.link') > 0)) {
+            $choose = 0;
 
-	// remote/secure download not done - leave to Txp to handle error or "local" file download
-	return;
+            // Get any overriding value of smd_choose from the query string
+            if ($pretext['qs']) {
+                list($qkey, $qval) = explode('=', $pretext['qs']);
+                if ($qkey == 'smd_choose') {
+                    if ($qval > 0) {
+                        $choose = intval($qval);
+                    }
+                }
+            }
+
+            // The file size, however, is that of the remote file.
+            $remoteURL = smd_remote_file_list(build_file_path($file_base_path, $real_file['filename']), 1, $choose);
+
+            if (count($remoteURL) > 0) {
+                $url = $remoteURL[0];
+                // Test the file exists: slow, but reduces false download count increments.
+                $hdrs = smd_get_headers($url, 1);
+                $allkey = strtolower(implode(' ', array_keys($hdrs)));
+
+                if (strpos($allkey, '200') > 0 && strpos($allkey, 'ok') > 0) {
+                    header('Content-Description: File Download');
+                    header('Content-Type: application/octet-stream');
+                    header('Content-Disposition: attachment; filename="' . basename($real_file['filename']) . '"; size = "'.$real_file['size'].'"');
+                    // Fix for lame IE 6 pdf bug on servers configured to send cache headers
+                    header('Cache-Control: private');
+                    @ini_set('zlib.output_compression', 'Off');
+                    @set_time_limit(0);
+                    @ignore_user_abort(true);
+
+                    // Hand-off to the remote file
+                    header('Location: ' . $url);
+
+                    // record download if the file sizes match
+                    if (intval($hdrs['content-length']) == intval($real_file['size'])) {
+                        safe_update('txp_file', 'downloads=downloads+1', 'id='.intval($id));
+                        log_hit('200');
+                    }
+
+                    // Remote download done: game over.
+                    exit(0);
+
+                } else {
+                    $file_error = 404;
+                }
+            } else {
+                $file_error = 404;
+            }
+        }
+    }
+
+    // Remote/secure download not done - leave to Txp to handle error
+    // or provide "local" file download.
+    return;
 }
 
-// ------------------------
-// Inject javascript onto the admin-side pages
-function smd_remote_js($content) {
-	$out = '<script type="text/javascript">'.n;
-	$out .= 'jQuery(function() {' .n. $content .n. '});';
-	$out .= '</script>'.n;
-	return $out;
+/**
+ * Inject jQuery DOMReady content into the admin-side pages.
+ *
+ * @param  string $content Javascript content block
+ * @return string          Wrapped content
+ */
+function smd_remote_js($content)
+{
+    return script_js('jQuery(function() {' .n. $content .n. '});');
 }
 
-// ------------------------
-// A bit like PHP 5's get_headers() but using curl to bypass servers disabling allow_url_fopen
-function smd_get_headers($url, $format=0) {
-	if (!$url) {
-		return false;
-	}
+/**
+ * Fetch header information from a remote source.
+ *
+ * Like PHP's get_headers() but using curl to bypass servers that
+ * disable allow_url_fopen.
+ *
+ * @param  string  $url    The destination to fetch
+ * @param  integer $format The format to return the information. 0=everything, 1=delimited
+ */
+function smd_get_headers($url, $format = 0)
+{
+    if (!$url) {
+        return false;
+    }
 
-	$uinfo=parse_url($url);
-	if (is_callable('checkdnsrr') && !checkdnsrr($uinfo['host'].'.','MX') && !checkdnsrr($uinfo['host'].'.','A')) {
-		return false;
-	}
+    $uinfo=parse_url($url);
 
-	$headers = array();
-	$url = str_replace(' ', '%20', trim($url));
+    if (is_callable('checkdnsrr') && !checkdnsrr($uinfo['host'].'.','MX') && !checkdnsrr($uinfo['host'].'.','A')) {
+        return false;
+    }
 
-	$ch = curl_init($url);
-	curl_setopt($ch, CURLOPT_NOBODY, true);
-	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-	curl_setopt($ch, CURLOPT_HEADER, true);
-	curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-	$data = curl_exec($ch);
-	curl_close($ch);
+    $headers = array();
+    $url = str_replace(' ', '%20', trim($url));
 
-	if ($data) {
-		if($format == 1) {
-			foreach(preg_split("/((\r?\n)|(\n?\r))/", $data) as $line) {
-				$line = trim($line);
-				if ($line == '') continue;
+    $ch = curl_init($url);
+    curl_setopt($ch, CURLOPT_NOBODY, true);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HEADER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    $data = curl_exec($ch);
+    curl_close($ch);
 
-				$exploded = explode(': ', $line);
-				$key = strtolower(array_shift($exploded));
-				if($key == $line) {
-					// No delimiter: take the whole line
-					$headers[] = $line;
-				} else {
-					$headers[$key] = substr($line, strlen($key)+2);
-				}
-				unset($key);
-			}
-		} else {
-			$headers[] = $data;
-		}
+    if ($data) {
+        if($format == 1) {
+            foreach(preg_split("/((\r?\n)|(\n?\r))/", $data) as $line) {
+                $line = trim($line);
 
-		return $headers;
-	} else {
-		return false;
-	}
+                if ($line == '') continue;
+
+                $exploded = explode(': ', $line);
+                $key = strtolower(array_shift($exploded));
+
+                if ($key == $line) {
+                    // No delimiter: take the whole line.
+                    $headers[] = $line;
+                } else {
+                    $headers[$key] = substr($line, strlen($key) + 2);
+                }
+
+                unset($key);
+            }
+        } else {
+            $headers[] = $data;
+        }
+
+        return $headers;
+    } else {
+        return false;
+    }
+}
+
+/**
+ * Display the mechanism preference widget.
+ *
+ * @param  string $key The preference key being displayed
+ * @param  string $val The current preference value
+ * @return string      HTML
+ */
+function smd_remote_mechanism($key, $val)
+{
+    $smd_remote_prefs = smd_remote_get_prefs();
+    $vals = $smd_remote_prefs[$key]['content'];
+    $current = do_list(get_pref($key, null));
+    $out = array();
+
+    foreach ($vals as $cb => $val) {
+        $checked = in_array($cb, $current);
+        $out[] = checkbox($key.'[]', $cb, $checked, '', $key.'.'.$cb) . sp . tag(gTxt($val), 'label', array('for' => $key.'.'.$cb));
+    }
+
+    return implode(n, $out);
+}
+
+/**
+ * Display the privs selector preference widget.
+ *
+ * @param  string $key The preference key being displayed
+ * @param  string $val The current preference value
+ * @return string      HTML
+ */
+function smd_remote_privs($key, $val)
+{
+    $smd_remote_prefs = smd_remote_get_prefs();
+
+    return selectInput($key, $smd_remote_prefs[$key]['content'][0], $val, $smd_remote_prefs[$key]['content'][1]);
+}
+
+/**
+ * Plugin pref definitions.
+ */
+function smd_remote_get_prefs()
+{
+    static $smd_remote_prefs;
+
+    if (!isset($smd_remote_prefs)) {
+        $all = get_groups();
+        ksort($all);
+        array_shift($all);
+        $all_bar_none = array_keys($all);
+
+        $smd_remote_prefs = array(
+            'smd_remote_mechanism' => array(
+                'html'     => 'smd_remote_mechanism',
+                'type'     => PREF_PLUGIN,
+                'position' => 10,
+                'content'  => array('remote' => 'smd_remote_internet', 'secure' => 'smd_remote_secure_loc'),
+                'default'  => 'remote,secure',
+            ),
+            'smd_remote_secure_path' => array(
+                'html'     => 'text_input',
+                'type'     => PREF_PLUGIN,
+                'position' => 20,
+                'default'  => get_pref('path_to_site'),
+            ),
+            'smd_remote_download_status' => array(
+                'html'     => 'text_input',
+                'type'     => PREF_PLUGIN,
+                'position' => 30,
+                'default'  => '2',
+            ),
+            'smd_remote_limit_privs' => array(
+                'html'     => 'smd_remote_privs',
+                'type'     => PREF_PLUGIN,
+                'position' => 40,
+                'content'  => array($all + array(implode(',', $all_bar_none) => gTxt('smd_remote_all')), false),
+                'default'  => '1',
+            ),
+        );
+    }
+
+    return $smd_remote_prefs;
 }
 
 // *****************************
 // ******** PUBLIC TAGS ********
 // *****************************
-// Blow-by-blow equivalent of file_download_link, just a remote/secure aware version.
-// Adds the choose attribute. Defaults to 0 ( = random, for load balancing). Specify
-// any higher integer to grab that particular entry from the file (if it exists, else use 1st)
-function smd_file_download_link($atts, $thing = NULL) {
-	global $thisfile;
-	extract(lAtts(array(
-		'filename'    => '',
-		'id'          => '',
-		'choose'      => '0',
-		'show_link'   => '0', // Deprecated
-		'show_suffix' => '0',
-		'obfuscate'   => '0',
-	), $atts));
+/**
+ * Blow-by-blow equivalent of file_download_link, just a remote/secure aware version.
+ *
+ * Adds the choose attribute. Defaults to 0 (random, for load balancing).
+ * Specify any higher integer to grab that particular entry from the file
+ * (if it exists, else use 1st).
+ *
+ * @param  array  $atts  Tag attributes
+ * @param  string $thing Tag contained content, if any
+ * @return string        HTML
+ *
+ * @todo   Check this is in sync with latest 4.7 alterations.
+ */
+function smd_file_download_link($atts, $thing = null)
+{
+    global $thisfile;
 
-	if (isset($atts['show_link'])) {
-		trigger_error(gTxt('deprecated_attribute', array('{name}' => 'show_suffix')), E_USER_NOTICE);
-		$show_suffix = $show_link;
-		unset($show_link);
-	}
+    extract(lAtts(array(
+        'filename'    => '',
+        'id'          => '',
+        'choose'      => '0',
+        'show_link'   => '0', // Deprecated
+        'show_suffix' => '0',
+        'obfuscate'   => '0',
+    ), $atts));
 
-	// Remove the extra attributes not in the original tag
-	unset($atts['choose']);
-	unset($atts['show_suffix']);
-	unset($atts['obfuscate']);
+    if (isset($atts['show_link'])) {
+        trigger_error(gTxt('deprecated_attribute', array('{name}' => 'show_suffix')), E_USER_NOTICE);
+        $show_suffix = $show_link;
+        unset($show_link);
+    }
 
-	$keys = array('smd_choose' => $choose);
-	$out = file_download_link($atts, $thing);
+    // Remove the extra attributes not in the original tag
+    unset($atts['choose']);
+    unset($atts['show_suffix']);
+    unset($atts['obfuscate']);
 
-	if (strpos($out, '.link') !== false) {
-		$origLink = explode('"', $out);
-		$idx = (count($origLink) == 1) ? 0 : 1;
-		$origLink[$idx] = (($show_suffix) ? $origLink[$idx] : str_replace('.link', '', $origLink[$idx])) . join_qs($keys); // Will ignore join_qs if choose is 0
-		$origLink[$idx] = ($obfuscate) ? dirname($origLink[$idx]) . '/' . substr(md5(basename($origLink[$idx])), 0, $obfuscate) : $origLink[$idx];
-		$out = implode('"', $origLink);
-	} else if (strpos($out, '.safe') !== false) {
-		$out = ($show_suffix) ? $out : str_replace('.safe', '', $out);
-	}
+    $keys = array('smd_choose' => $choose);
+    $out = file_download_link($atts, $thing);
 
-	return $out;
+    if (strpos($out, '.link') !== false) {
+        $origLink = explode('"', $out);
+        $idx = (count($origLink) == 1) ? 0 : 1;
+        $origLink[$idx] = (($show_suffix) ? $origLink[$idx] : str_replace('.link', '', $origLink[$idx])) . join_qs($keys); // Will ignore join_qs if choose is 0
+        $origLink[$idx] = ($obfuscate) ? dirname($origLink[$idx]) . '/' . substr(md5(basename($origLink[$idx])), 0, $obfuscate) : $origLink[$idx];
+        $out = implode('"', $origLink);
+    } else if (strpos($out, '.safe') !== false) {
+        $out = ($show_suffix) ? $out : str_replace('.safe', '', $out);
+    }
+
+    return $out;
 }
 
-// ------------------------
-// Equivalent to file_download_name but optionally removes the .link / .safe
-function smd_file_download_name($atts) {
-	global $thisfile;
-	extract(lAtts(array(
-		'show_link'   => '0',
-		'show_suffix' => '0',
-	), $atts));
-	assert_file();
+/**
+ * Equivalent to file_download_name but optionally removes the .link/.safe suffix.
+ *
+ * @param  array  $atts Tag attributes
+ * @return string       HTML
+ *
+ * @todo   Check this is in sync with latest 4.7 alterations.
+ */
+function smd_file_download_name($atts)
+{
+    global $thisfile;
 
-	if (isset($atts['show_link'])) {
-		trigger_error(gTxt('deprecated_attribute', array('{name}' => 'show_suffix')), E_USER_NOTICE);
-		$show_suffix = $show_link;
-		unset($show_link);
-	}
+    extract(lAtts(array(
+        'show_link'   => '0',
+        'show_suffix' => '0',
+    ), $atts));
 
-	$out = $thisfile['filename'];
-	if (!$show_suffix) {
-		if (strpos($out, '.link') !== false) {
-			$out = str_replace('.link', '', $out);
-		} else if (strpos($out, '.safe') !== false) {
-			$out = str_replace('.safe', '', $out);
-		}
-	}
+    assert_file();
 
-	return $out;
+    if (isset($atts['show_link'])) {
+        trigger_error(gTxt('deprecated_attribute', array('{name}' => 'show_suffix')), E_USER_NOTICE);
+        $show_suffix = $show_link;
+        unset($show_link);
+    }
+
+    $out = $thisfile['filename'];
+
+    if (!$show_suffix) {
+        if (strpos($out, '.link') !== false) {
+            $out = str_replace('.link', '', $out);
+        } else if (strpos($out, '.safe') !== false) {
+            $out = str_replace('.safe', '', $out);
+        }
+    }
+
+    return $out;
 }
 
-// ------------------------
-// Add an image to the download form which, by default, is based on the filename of the download itself
-function smd_file_download_image($atts) {
-	global $thisfile;
+/**
+ * Add an image to the download form which, by default, is based on the filename of the download itself
+ *
+ * @param  array  $atts Tag attributes
+ * @return string       HTML
+ */
+function smd_file_download_image($atts)
+{
+    global $thisfile;
 
-	extract(lAtts(array(
-		'filename'  => '',
-		'id'        => '',
-		'extension' => 'jpg',
-		'ifmissing' => '?ref',
-		'thumb'     => '0', // Deprecated
-		'thumbnail' => '0',
-		'class'     => '',
-		'wraptag'   => '',
-	), $atts));
+    extract(lAtts(array(
+        'filename'  => '',
+        'id'        => '',
+        'extension' => 'jpg',
+        'ifmissing' => '?ref',
+        'thumb'     => '0', // Deprecated
+        'thumbnail' => '0',
+        'class'     => '',
+        'wraptag'   => '',
+    ), $atts));
 
-	if (isset($atts['thumb'])) {
-		trigger_error(gTxt('deprecated_attribute', array('{name}' => 'thumbnail')), E_USER_NOTICE);
-		$thumbnail = $thumb;
-		unset($thumb);
-	}
+    if (isset($atts['thumb'])) {
+        trigger_error(gTxt('deprecated_attribute', array('{name}' => 'thumbnail')), E_USER_NOTICE);
+        $thumbnail = $thumb;
+        unset($thumb);
+    }
 
-	if ($filename == '' && $id == '') {
-		assert_file();
-		$filename = $thisfile['filename'];
-	}
+    if ($filename == '' && $id == '') {
+        assert_file();
+        $filename = $thisfile['filename'];
+    }
 
-	$filename = str_replace('.link', '', $filename) . (($extension=='') ? '' : '.'.$extension);
+    $filename = str_replace('.link', '', $filename) . (($extension == '') ? '' : '.' . $extension);
 
-	$img = '';
-	if ($id) {
-		$img = ($thumbnail==0) ? @image(array('id' => $id, 'class' => $class, 'wraptag' => $wraptag)) : @thumbnail(array('id' => $id, 'class' => $class, 'wraptag' => $wraptag));
-	} else if ((strpos($filename, 'http://') === 0) || (strpos($filename, '/') === 0)) {
-		$img = (($wraptag=='') ? '' : '<'.$wraptag. (($class=='') ? '' : ' class="'.$class.'"') .'>') . '<img src="'.$filename.'"'. (($wraptag=='' && $class) ? ' class="'.$class.'"' : '') . '/>'. (($wraptag=='') ? '' : '</'.$wraptag.'>');
-	} else {
-		$img = ($thumbnail==0) ? @image(array('name' => $filename, 'class' => $class, 'wraptag' => $wraptag)) : @thumbnail(array('name' => $filename, 'class' => $class, 'wraptag' => $wraptag));
-	}
-	$wrapper = (($wraptag=='') ? '@@REPL' : '<'.$wraptag. (($class=='') ? '' : ' class="'.$class.'"') .'>@@REPL</'.$wraptag.'>');
-	if (strpos($ifmissing, '?ref') === 0) {
-		$display = ($id) ? $id : $filename;
-		$missing = str_replace('@@REPL', $display, $wrapper);
-	} else if (strpos($ifmissing, '?image') === 0) {
-		$imgParts = explode(':', $ifmissing);
-		if (count($imgParts) == 2) {
-			$imgOpts = array();
-			if(is_numeric($imgParts[1])) {
-				$imgOpts['id'] = $imgParts[1];
-			} else {
-				$imgOpts['name'] = $imgParts[1];
-			}
-			$missing = str_replace('@@REPL', (($thumbnail==0) ? @image($imgOpts) : @thumbnail($imgOpts)), $wrapper);
-		} else {
-			$missing = '';
-		}
-	} else if ($ifmissing == '') {
-		$missing = '';
-	} else {
-		$missing = str_replace('@@REPL', $ifmissing, $wrapper);
-	}
-	return ($img) ? $img : $missing;
+    $img = '';
+
+    if ($id) {
+        $img = ($thumbnail==0) ? @image(array('id' => $id, 'class' => $class, 'wraptag' => $wraptag)) : @thumbnail(array('id' => $id, 'class' => $class, 'wraptag' => $wraptag));
+    } elseif ((strpos($filename, 'http://') === 0) || (strpos($filename, 'https://') === 0) || (strpos($filename, '/') === 0)) {
+        $img = (($wraptag == '') ? '' : '<' . $wraptag . (($class == '') ? '' : ' class="' . $class . '"') .'>') . '<img src="' . $filename . '"' . (($wraptag == '' && $class) ? ' class="' . $class . '"' : '') . '/>'. (($wraptag == '') ? '' : '</' . $wraptag . '>');
+    } else {
+        $img = ($thumbnail==0) ? @image(array('name' => $filename, 'class' => $class, 'wraptag' => $wraptag)) : @thumbnail(array('name' => $filename, 'class' => $class, 'wraptag' => $wraptag));
+    }
+
+    $wrapper = (($wraptag=='') ? '@@REPL' : '<' . $wraptag . (($class == '') ? '' : ' class="' . $class . '"') .'>@@REPL</' . $wraptag . '>');
+
+    if (strpos($ifmissing, '?ref') === 0) {
+        $display = ($id) ? $id : $filename;
+        $missing = str_replace('@@REPL', $display, $wrapper);
+    } elseif (strpos($ifmissing, '?image') === 0) {
+        $imgParts = explode(':', $ifmissing);
+
+        if (count($imgParts) == 2) {
+            $imgOpts = array();
+
+            if (is_numeric($imgParts[1])) {
+                $imgOpts['id'] = $imgParts[1];
+            } else {
+                $imgOpts['name'] = $imgParts[1];
+            }
+
+            $missing = str_replace('@@REPL', (($thumbnail == 0) ? @image($imgOpts) : @thumbnail($imgOpts)), $wrapper);
+        } else {
+            $missing = '';
+        }
+    } elseif ($ifmissing == '') {
+        $missing = '';
+    } else {
+        $missing = str_replace('@@REPL', $ifmissing, $wrapper);
+    }
+
+    return ($img) ? $img : $missing;
 }
 
-// ------------------------
-// Check if the given file exists in the filesystem
-function smd_if_file_exists($atts, $thing) {
-	global $file_base_path;
+/**
+ * Check if the given file exists in the filesystem.
+ *
+ * @param  array  $atts  Tag attributes
+ * @param  string $thing Tag contained content
+ * @todo   Remove EvalElse().
+ */
+function smd_if_file_exists($atts, $thing)
+{
+    global $file_base_path;
 
-	extract(lAtts(array(
-		'filename' => '',
-		'id' => '',
-		'path' => '',
-	), $atts));
+    extract(lAtts(array(
+        'filename' => '',
+        'id'       => '',
+        'path'     => '',
+    ), $atts));
 
-	if ($id) {
-		$disfile = fileDownloadFetchInfo('id = '.intval($id));
-		$filename = $disfile['filename'];
-	}
+    if ($id) {
+        $disfile = fileDownloadFetchInfo('id = '.intval($id));
+        $filename = $disfile['filename'];
+    }
 
-	$path = ($path) ? $path : $file_base_path;
-	$file_exists = file_exists(build_file_path($path, $filename));
-	return parse(EvalElse($thing, $file_exists));
-}
+    $path = ($path) ? $path : $file_base_path;
+    $file_exists = file_exists(build_file_path($path, $filename));
 
-// ------------------------
-// Set up the global prefs for the plugin
-function smd_remote_get_prefs() {
-	global $smd_remote_prefs;
-
-	$smd_remote_prefs = array(
-		'smd_remote_mechanism' => array(
-			'html'     => 'checkboxset',
-			'type'     => PREF_HIDDEN,
-			'position' => 10,
-			'content'  => array('remote' => 'smd_remote_internet', 'secure' => 'smd_remote_secure_loc'),
-			'default'  => 'remote,secure',
-		),
-		'smd_remote_secure_path' => array(
-			'html'     => 'text_input',
-			'type'     => PREF_HIDDEN,
-			'position' => 20,
-			'default'  => get_pref('path_to_site'),
-		),
-		'smd_remote_download_status' => array(
-			'html'     => 'text_input',
-			'type'     => PREF_HIDDEN,
-			'position' => 30,
-			'default'  => '2',
-		),
-		'smd_remote_limit_privs' => array(
-			'html'     => 'selectlist',
-			'type'     => PREF_HIDDEN,
-			'position' => 40,
-			'content'  => array(get_groups(), false),
-			'default'  => '0',
-		),
-	);
+    return parse(EvalElse($thing, $file_exists));
 }
 # --- END PLUGIN CODE ---
 if (0) {
@@ -1084,7 +1319,7 @@ h2(#features). Features
 
 h2. Installation / uninstallation
 
-p(information). Requires Textpattern 4.5.7+
+p(information). Requires Textpattern 4.7.2+
 
 Download the plugin from either "textpattern.org":http://textpattern.org/plugins/901/smd_remote_file, or the "software page":http://stefdawson.com/sw, paste the code into the Txp _Admin->Plugins_ panel, install and enable the plugin. Visit the "forum thread":http://forum.textpattern.com/viewtopic.php?id=24673 for more info or to report on the success or otherwise of the plugin.
 
@@ -1100,17 +1335,17 @@ h2. Plugin preferences
 
 On the _Extensions->Remote file_ panel are the following options to govern how the plugin behaves:
 
-; %(atnm)Allow downloads from%
+; %Allow downloads from%
 : Determines which interface elements you see. Choose from:
 :: *The Internet* to allow remote URLs
 :: *Secure location* to allow files to be stored in your nominated non-web-acessible folder
-; %(atnm)Secure file path%
+; %Secure file path%
 : Absolute file path to the place you want to store secure files. Ignore this option if you have elected not to use secure files.
-; %(atnm)Permitted download statuses%
+; %Permitted download statuses%
 : List of status numbers (not names) for which you are going to permit downloads. Choose from:
 :: 2 for Hidden files
 :: 3 for Pending files
-; %(atnm)Limit downloads to this priv level%
+; %Limit downloads to this priv level%
 : The privilege level of users who can download hidden/pending files (providing you have enbled this feature using the _Permitted download statuses_ pref). If you are using smd_user_manager this setting is ignored.
 
 h2. The _Files_ tab: remote files
@@ -1155,25 +1390,25 @@ h2(tag #smd_rem_fdl). Tag: @<txp:smd_file_download_link>@
 
 An exact drop-in replacement for the standard "file_download_link tag":http://textpattern.net/wiki/index.php?title=file_download_link tag, with a few extra attributes:
 
-; %(atnm)id%
+; %id%
 : The ID of the file you want to link to. If left blank, it can be supplied from whatever is between the opening and closing tag
-; %(atnm)filename%
+; %filename%
 : The filename of the file you want to link to. If left blank, it can be supplied from whatever is between the opening and closing tag. If both filename and ID are specified, ID takes precedence
-; %(atnm)choose%
+; %choose%
 : %(important)(for remote URLs only)% governs how to choose which remote URL to serve. Set it to 0 to randomly pick a URL from those uploaded for this file (the standard file_download_link tag will also do this). You can also specify a higher number to pick the URL from that particular slot. So @choose="1"@ will always select the 1st file you uploaded and deliver that; @choose="2"@ the second; and so on. If you specify a number bigger than the number of URLs stored against a file, it picks the first one you uploaded.
-; %(atnm)show_suffix%
+; %show_suffix%
 : Whether to display the @.link@ or @.safe@ suffix in the link. Choose from:
 :: 0 to hide the suffix
 :: 1 to show the suffix (in other words, make the tag behave like the built-in @file_download_link@)
 : Default: 0
-; %(atnm)obfuscate%
+; %obfuscate%
 : %(important)(for remote URLs only)% hide the filename portion of the linkand replace it with a random string of characters. Specify the length of the string, e.g. @obfusctae="8"@ would render a link that resembles @http://site.com/file_download/42/3e9845ac@. This is handy to keep the filename partly secret, but it's not foolproof. As soon as someone starts downloading the file the full remote URL is known.
 
 h2(tag #smd_rem_fdn). Tag: @<txp:smd_file_download_name>@
 
 An exact drop-in replacement for the standard "file_download_name":http://textpattern.net/wiki/index.php?title=file_download_name tag, but with one attribute:
 
-; %(atnm)show_suffix%
+; %show_suffix%
 : Whether to display the @.link@ or @.safe@ on the end of file name. Choose from:
 :: 0 to hide the suffix
 :: 1 to display it (thus behaving like the built-in @file_download_name@)
@@ -1186,26 +1421,26 @@ To use it, just upload an image (by default a jpg) via Txp's _Images_ panel and 
 
 By default, if any image doesn't exist, the tag outputs the image filename instead (if using the @filename@) or the id (if using the @id@). This behaviour can be overridden with the @ifmissing@ option.
 
-; %(atnm)id%
+; %id%
 : The ID of an image to display
-; %(atnm)filename%
+; %filename%
 : The filename of an image to display. If both filename and ID are specified, ID takes precedence. Note that in this and @id@ modes, the tag is essentially the same as @<txp:image>@. The exception is that you do not have to specify the image file @extension@, as it does that for you by default if you use JPGs and you can specify thumbnails instead using the @thumbnail@ attribute
-; %(atnm)extension%
+; %extension%
 : Saves you having to specify the file extension in the @filename@ parameter. Enter it here _without_ the dot.
 : Default: @jpg@
-; %(atnm)thumbnail%
+; %thumbnail%
 : Display full size image or thumbnail. Choose from:
 :: 0 for the full size image
 :: 1 if you have created thumbnails and wish to use them
 : Default: 0
-; %(atnm)ifmissing%
+; %ifmissing%
 : Governs what to do in the event an image is missing. Use @ifmissing=""@ to output nothing in the event of a missing image. Other alternatives:
 :: @?ref@ to display either the image filename or its ID if it was used as an attribute.
 :: @?image:ID_or_name"@ to display the given Txp image (e.g. @ifmissing="?image:32"@ or @ifmissing="?image:NoPic.jpg"@)
 :: @some_text@ to display the given text, e.g. @ifmissing="No image yet"@
-; %(atnm)wraptag%
+; %wraptag%
 : The HTML tag to wrap around the outside of the image. Specify it with no angle brackets, e.g. @wraptag="p"@.
-; %(atnm)class%
+; %class%
 : The CSS class name to apply to the image. If using @wraptag@ the class is applied to the surrounding tag. If it is omitted the class is applied directly to the image.
 
 h2. How it works
