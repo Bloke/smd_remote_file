@@ -255,7 +255,7 @@ function smd_remote_file_upload($evt, $stp, $def)
 
     $def = preg_replace('/<input type="reset" value="Reset" \/>\s*<input type="submit" value="Upload" \/>/',
         (($dosec)
-            ? sp.checkbox('smd_secure', 1, ($is_safe ? 1 : 0))
+            ? sp.checkbox('smd_secure', 1, ($is_safe ? 1 : 0), '', 'smd_secure')
                 . ' <label for="smd_secure">'.gTxt('smd_remote_secure').'</label>'
             : ''
         )
@@ -284,6 +284,7 @@ function smd_remote_file($evt, $stp)
     global $file_base_path, $txp_user, $step, $theme;
 
     smd_remote_prefs_install();
+
     extract(doSlash(gpsa(array('smd_remote_url', 'smd_secure', 'category', 'permissions', 'description', 'title'))));
 
     $finfo = array(
